@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { Keyring } from '@polkadot/keyring';
 import { KeyringPair } from '@polkadot/keyring/types';
 
-type AccountPool = {
+export type AccountPool = {
     accounts: KeyringPair[];
     currentIndex: number;
 };
