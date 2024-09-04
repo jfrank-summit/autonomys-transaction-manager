@@ -1,5 +1,8 @@
 import { updateState, getState } from './store';
 import { Transaction, TransactionStatus, Account } from './types';
+import { ApiPromise } from '@polkadot/api';
+import { SubmittableExtrinsic } from '@polkadot/api/types';
+import { WsProvider } from '@polkadot/rpc-provider';
 
 let currentAccountIndex = 0;
 
@@ -9,6 +12,10 @@ const getNextAccount = (): Account | undefined => {
     const account = state.accounts[currentAccountIndex];
     currentAccountIndex = (currentAccountIndex + 1) % state.accounts.length;
     return account;
+};
+
+const createExtrinsic = (api: ApiPromise, tx: Transaction): SubmittableExtrinsic<'promise'> => {
+    return api.tx[tx.module][tx.method](...tx.params);
 };
 
 export const addTransaction = (module: string, method: string, params: any[]): void => {
@@ -37,7 +44,7 @@ export const addTransaction = (module: string, method: string, params: any[]): v
 
 export const processNextTransaction = async (): Promise<void> => {
     const state = getState();
-    if (state.transactionQueue.pending.length === 0) return;
+    if (state.transactionQueue.pending.length === 0 || !state.api) return;
 
     const nextTx = state.transactionQueue.pending[0];
     const account = state.accounts.find(acc => acc.address === nextTx.submittedBy.address);
@@ -49,9 +56,26 @@ export const processNextTransaction = async (): Promise<void> => {
     }
 
     try {
-        // Here you would submit the transaction to the blockchain
-        // For now, we'll just simulate it with a delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        const extrinsic = createExtrinsic(state.api, nextTx);
+
+        await new Promise<void>((resolve, reject) => {
+            extrinsic.signAndSend(account.keyringPair, { nonce: nextTx.nonce }, ({ status, events }) => {
+                if (status.isInBlock || status.isFinalized) {
+                    events
+                        .filter(({ event }) => state.api!.events.system.ExtrinsicFailed.is(event))
+                        .forEach(({ event }) => {
+                            console.error(`Transaction failed: ${event.data.toString()}`);
+                            reject(new Error(`Transaction failed: ${event.data.toString()}`));
+                        });
+
+                    if (status.isFinalized) {
+                        console.log(`Transaction finalized at blockHash ${status.asFinalized}`);
+                        updateTransactionStatus(nextTx.id, TransactionStatus.Confirmed);
+                        resolve();
+                    }
+                }
+            });
+        });
 
         updateTransactionStatus(nextTx.id, TransactionStatus.Submitted);
     } catch (error) {
@@ -124,4 +148,17 @@ export const getAccountNonce = (address: string): number => {
     const state = getState();
     const account = state.accounts.find(acc => acc.address === address);
     return account ? account.nonce : 0;
+};
+
+export const initializeApi = async (nodeUrl: string): Promise<void> => {
+    try {
+        const provider = new WsProvider(nodeUrl);
+        const api = await ApiPromise.create({ provider });
+        updateState(draft => {
+            draft.api = api;
+        });
+        console.log('API initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize API:', error);
+    }
 };

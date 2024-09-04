@@ -1,17 +1,20 @@
 import { loadAccountsFromFile } from './accountManager';
-import { addTransaction, processNextTransaction, retryFailedTransactions } from './transactionManager';
+import { addTransaction, processNextTransaction, retryFailedTransactions, initializeApi } from './transactionManager';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 async function main() {
     const privateKeysPath = process.env.PRIVATE_KEYS_PATH;
-    if (!privateKeysPath) {
-        throw new Error('PRIVATE_KEYS_PATH is not set in the environment variables');
+    const nodeUrl = process.env.NODE_URL;
+    if (!privateKeysPath || !nodeUrl) {
+        throw new Error('PRIVATE_KEYS_PATH or NODE_URL is not set in the environment variables');
     }
 
     await loadAccountsFromFile(privateKeysPath);
     console.log('Accounts loaded successfully');
+
+    await initializeApi(nodeUrl);
 
     // Example usage
     addTransaction('balances', 'transfer', ['5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty', 1000]);

@@ -4,6 +4,7 @@
   "main": "index.js",
   "dependencies": {
     "@polkadot/api": "^12.4.2",
+    "@polkadot/types": "^12.4.2",
     "dotenv": "^16.4.5",
     "immer": "^10.1.1"
   },
