@@ -11,13 +11,13 @@ const main = async () => {
 
         const apiState: ApiState = await initializeApi(config.nodeUrl);
 
-        const initialState: ServerState = {
+        const initialState = {
             transactionQueue: createTransactionQueue(),
             accountPool: createAccountPool(config.privateKeysPath),
             apiState,
         };
 
-        const app = createServer(initialState);
+        const app = await createServer(initialState);
 
         const port = 3000;
         app.listen(port, () => {

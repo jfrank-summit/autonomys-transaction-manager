@@ -1,9 +1,15 @@
 import { KeyringPair } from '@polkadot/keyring/types';
 
+export type TransactionCall = {
+    module: string;
+    method: string;
+    params: any[];
+};
+
 export type Transaction = {
     id: string;
     account: KeyringPair;
-    extrinsic: string; // This could be more specific based on your needs
+    call: TransactionCall;
     nonce: number;
     status: 'pending' | 'processing' | 'completed' | 'failed';
 };
