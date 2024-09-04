@@ -1,5 +1,5 @@
 {
-  "name": "polkadot-transaction-manager",
+  "name": "substrate-transaction-manager",
   "version": "1.0.0",
   "main": "index.js",
   "license": "MIT",

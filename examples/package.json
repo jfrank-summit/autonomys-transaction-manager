@@ -1,9 +1,10 @@
 {
-  "name": "polkadot-transaction-manager-examples",
+  "name": "substrate-transaction-manager-examples",
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "add-remark": "ts-node src/addRemark.ts"
+    "add-remark": "ts-node src/addRemark.ts",
+    "add-multiple-remarks": "ts-node src/addMultipleRemarks.ts"
   },
   "dependencies": {
     "axios": "^1.4.0"
