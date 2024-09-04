@@ -1,8 +1,7 @@
 import { updateState, getState } from './store';
 import { Transaction, TransactionStatus, Account } from './types';
-import { ApiPromise } from '@polkadot/api';
+import { ApiPromise, WsProvider } from '@polkadot/api';
 import { SubmittableExtrinsic } from '@polkadot/api/types';
-import { WsProvider } from '@polkadot/rpc-provider';
 
 let currentAccountIndex = 0;
 
@@ -18,78 +17,166 @@ const createExtrinsic = (api: ApiPromise, tx: Transaction): SubmittableExtrinsic
     return api.tx[tx.module][tx.method](...tx.params);
 };
 
-export const addTransaction = (module: string, method: string, params: any[]): void => {
+const fetchOnChainNonce = async (api: ApiPromise, address: string): Promise<number> => {
+    const nonce = await api.rpc.system.accountNextIndex(address);
+    console.log(`Fetched on-chain nonce for ${address}: ${nonce}`);
+    return nonce.toNumber();
+};
+
+const getNextNonce = async (api: ApiPromise, account: Account): Promise<number> => {
+    const onChainNonce = await fetchOnChainNonce(api, account.address);
+    const pendingNonce = getState().transactionQueue.pending.filter(tx => tx.submittedBy === account.address).length;
+    const nextNonce = Math.max(account.nonce, onChainNonce) + pendingNonce;
+    console.log(`Calculated next nonce for ${account.address}: ${nextNonce}`);
+    return nextNonce;
+};
+
+export const addTransaction = async (module: string, method: string, params: any[]): Promise<void> => {
+    const state = getState();
+    if (!state.api) {
+        console.error('API not initialized');
+        return;
+    }
+
     const account = getNextAccount();
     if (!account) {
         console.error('No accounts available to submit transaction');
         return;
     }
 
-    const transaction: Transaction = {
-        id: account.address + Date.now().toString(),
-        submittedBy: account,
-        module,
-        method,
-        params,
-        nonce: account.nonce,
-        status: TransactionStatus.Pending,
-        retryCount: 0,
-    };
+    const nonce = await getNextNonce(state.api, account);
 
     updateState(draft => {
+        const transaction: Transaction = {
+            id: account.address + Date.now().toString(),
+            submittedBy: account.address,
+            module,
+            method,
+            params,
+            nonce,
+            status: TransactionStatus.Pending,
+            retryCount: 0,
+        };
+
         draft.transactionQueue.pending.push(transaction);
-        account.nonce += 1; // Increment nonce immediately to prevent race conditions
+        console.log(`Added transaction to queue: ${JSON.stringify(transaction)}`);
     });
+
+    // Process the new transaction immediately
+    await processNextTransaction();
 };
 
-export const processNextTransaction = async (): Promise<void> => {
+const processTransaction = async (tx: Transaction): Promise<void> => {
     const state = getState();
-    if (state.transactionQueue.pending.length === 0 || !state.api) return;
+    if (!state.api) return;
 
-    const nextTx = state.transactionQueue.pending[0];
-    const account = state.accounts.find(acc => acc.address === nextTx.submittedBy.address);
-
+    const account = state.accounts.find(acc => acc.address === tx.submittedBy);
     if (!account) {
-        console.error(`Account not found for address: ${nextTx.submittedBy.address}`);
-        updateTransactionStatus(nextTx.id, TransactionStatus.Failed);
+        console.error(`Account not found for address: ${tx.submittedBy}`);
+        updateTransactionStatus(tx.id, TransactionStatus.Failed);
         return;
     }
 
     try {
-        const extrinsic = createExtrinsic(state.api, nextTx);
+        const extrinsic = createExtrinsic(state.api, tx);
+        console.log(`Submitting transaction: ${JSON.stringify(tx)}`);
 
         await new Promise<void>((resolve, reject) => {
-            extrinsic.signAndSend(account.keyringPair, { nonce: nextTx.nonce }, ({ status, events }) => {
-                if (status.isInBlock || status.isFinalized) {
-                    events
-                        .filter(({ event }) => state.api!.events.system.ExtrinsicFailed.is(event))
-                        .forEach(({ event }) => {
-                            console.error(`Transaction failed: ${event.data.toString()}`);
-                            reject(new Error(`Transaction failed: ${event.data.toString()}`));
-                        });
-
-                    if (status.isFinalized) {
-                        console.log(`Transaction finalized at blockHash ${status.asFinalized}`);
-                        updateTransactionStatus(nextTx.id, TransactionStatus.Confirmed);
-                        resolve();
-                    }
-                }
-            });
+            extrinsic.signAndSend(
+                account.keyringPair,
+                { nonce: tx.nonce },
+                handleTransactionStatus(tx, resolve, reject)
+            );
         });
 
-        updateTransactionStatus(nextTx.id, TransactionStatus.Submitted);
+        updateTransactionStatus(tx.id, TransactionStatus.Submitted);
+        updateAccountNonce(tx.submittedBy, tx.nonce + 1);
     } catch (error) {
         console.error(`Failed to submit transaction: ${error}`);
-        updateTransactionStatus(nextTx.id, TransactionStatus.Failed);
-        // Decrement nonce if transaction failed to submit
-        updateState(draft => {
-            const account = draft.accounts.find(acc => acc.address === nextTx.submittedBy.address);
-            if (account) account.nonce -= 1;
-        });
+        handleTransactionError(tx, error);
     }
 };
 
-export const updateTransactionStatus = (id: string, status: TransactionStatus): void => {
+const handleTransactionStatus =
+    (tx: Transaction, resolve: () => void, reject: (error: Error) => void) =>
+    (result: { status: any; events: any; dispatchError: any }) => {
+        const { status, events, dispatchError } = result;
+        console.log(`Transaction status: ${status.type}`);
+
+        if (dispatchError) {
+            handleDispatchError(dispatchError, reject);
+            return;
+        }
+
+        if (status.isInBlock || status.isFinalized) {
+            handleInBlockStatus(tx, status, events, resolve, reject);
+        }
+    };
+
+const handleDispatchError = (dispatchError: any, reject: (error: Error) => void) => {
+    const state = getState();
+    if (dispatchError.isModule) {
+        const decoded = state.api!.registry.findMetaError(dispatchError.asModule);
+        const { docs, name, section } = decoded;
+        console.error(`${section}.${name}: ${docs.join(' ')}`);
+    } else {
+        console.error(dispatchError.toString());
+    }
+    reject(new Error(`Transaction failed: ${dispatchError.toString()}`));
+};
+
+const handleInBlockStatus = (
+    tx: Transaction,
+    status: any,
+    events: any,
+    resolve: () => void,
+    reject: (error: Error) => void
+) => {
+    const state = getState();
+    events
+        .filter(({ event }: { event: any }) => state.api!.events.system.ExtrinsicFailed.is(event))
+        .forEach(({ event }: { event: any }) => {
+            console.error(`Transaction failed: ${event.data.toString()}`);
+            reject(new Error(`Transaction failed: ${event.data.toString()}`));
+        });
+
+    if (status.isFinalized) {
+        console.log(`Transaction finalized at blockHash ${status.asFinalized}`);
+        updateTransactionStatus(tx.id, TransactionStatus.Confirmed);
+        resolve();
+    }
+};
+
+const handleTransactionError = (tx: Transaction, error: any) => {
+    if (error instanceof Error && error.message.includes('Priority is too low')) {
+        const delay = Math.min(1000 * 2 ** tx.retryCount, 30000);
+        console.log(`Transaction priority too low. Waiting ${delay}ms before retry...`);
+        setTimeout(() => retryTransaction(tx), delay);
+    } else {
+        updateTransactionStatus(tx.id, TransactionStatus.Failed);
+    }
+};
+
+const retryTransaction = (tx: Transaction) => {
+    updateState(draft => {
+        const transaction = draft.transactionQueue.pending.find(t => t.id === tx.id);
+        if (transaction) {
+            transaction.retryCount++;
+            transaction.status = TransactionStatus.Pending;
+        }
+    });
+    processNextTransaction();
+};
+
+export const processNextTransaction = async (): Promise<void> => {
+    const state = getState();
+    if (state.transactionQueue.pending.length === 0) return;
+
+    const nextTx = state.transactionQueue.pending[0];
+    await processTransaction(nextTx);
+};
+
+const updateTransactionStatus = (id: string, status: TransactionStatus): void => {
     updateState(draft => {
         const pendingIndex = draft.transactionQueue.pending.findIndex(t => t.id === id);
         if (pendingIndex !== -1) {
@@ -114,40 +201,14 @@ export const updateTransactionStatus = (id: string, status: TransactionStatus): 
     });
 };
 
-export const syncAccountNonce = (address: string, onChainNonce: number): void => {
+const updateAccountNonce = (address: string, newNonce: number): void => {
     updateState(draft => {
         const account = draft.accounts.find(acc => acc.address === address);
         if (account) {
-            account.nonce = Math.max(account.nonce, onChainNonce);
+            account.nonce = Math.max(account.nonce, newNonce);
+            console.log(`Updated nonce for ${account.address}: ${account.nonce}`);
         }
     });
-};
-
-export const retryFailedTransactions = (): void => {
-    const state = getState();
-    const failedTransactions = state.transactionQueue.pending.filter(tx => tx.status === TransactionStatus.Failed);
-
-    failedTransactions.forEach(tx => {
-        if (tx.retryCount < 5) {
-            updateState(draft => {
-                const transaction = draft.transactionQueue.pending.find(t => t.id === tx.id);
-                if (transaction) {
-                    transaction.retryCount += 1;
-                    transaction.status = TransactionStatus.Pending;
-                    transaction.nonce = getAccountNonce(transaction.submittedBy.address);
-                }
-            });
-        } else {
-            console.error(`Transaction ${tx.id} has failed after 5 retries. Removing from queue.`);
-            updateTransactionStatus(tx.id, TransactionStatus.Failed);
-        }
-    });
-};
-
-export const getAccountNonce = (address: string): number => {
-    const state = getState();
-    const account = state.accounts.find(acc => acc.address === address);
-    return account ? account.nonce : 0;
 };
 
 export const initializeApi = async (nodeUrl: string): Promise<void> => {

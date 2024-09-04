@@ -1,5 +1,6 @@
 import { loadAccountsFromFile } from './accountManager';
-import { addTransaction, processNextTransaction, retryFailedTransactions, initializeApi } from './transactionManager';
+import { initializeApi } from './transactionManager';
+import { startServer } from './server';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -12,20 +13,8 @@ async function main() {
     }
 
     await loadAccountsFromFile(privateKeysPath);
-    console.log('Accounts loaded successfully');
-
     await initializeApi(nodeUrl);
-
-    // Example usage
-    addTransaction('balances', 'transfer', ['5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty', 1000]);
-
-    // Process transactions and retry failed ones periodically
-    setInterval(async () => {
-        await processNextTransaction();
-        retryFailedTransactions();
-    }, 1000); // Adjust the interval as needed
-
-    // More logic will be added here as we progress
+    startServer();
 }
 
 main().catch(console.error);

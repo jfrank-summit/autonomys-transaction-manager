@@ -16,7 +16,7 @@ export enum TransactionStatus {
 
 export interface Transaction {
     id: string;
-    submittedBy: Account;
+    submittedBy: string;
     module: string;
     method: string;
     params: any[];
