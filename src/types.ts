@@ -1,4 +1,5 @@
 import { ApiPromise } from '@polkadot/api';
+import { KeyringPair } from '@polkadot/keyring/types';
 
 export interface Transaction {
     id: string;
@@ -13,6 +14,7 @@ export interface Transaction {
 export interface Account {
     address: string;
     nonce: number;
+    keyringPair: KeyringPair;
 }
 
 export enum TransactionStatus {
