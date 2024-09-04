@@ -60,6 +60,23 @@ const createTransactionHandler = (context: ServerContext) => (req: express.Reque
     return res.status(200).json({ message: 'Transaction added to queue', transactionId: transaction.id });
 };
 
+// Add this new handler
+const createQueueViewHandler = (context: ServerContext) => (req: express.Request, res: express.Response) => {
+    const state = context.getState();
+    const queueLength = getQueueLength(state.transactionQueue);
+    const queueItems = state.transactionQueue.queue.map(tx => ({
+        id: tx.id,
+        account: tx.account.address,
+        call: tx.call,
+        status: tx.status,
+    }));
+
+    return res.status(200).json({
+        queueLength,
+        queueItems,
+    });
+};
+
 // Modify processTransactionsAsync to continue processing while there are transactions
 const processTransactionsAsync = async (context: ServerContext) => {
     const state = context.getState();
@@ -118,6 +135,8 @@ export const createServer = async (initialState: Omit<ServerState, 'nonceMap'>) 
     };
 
     app.post('/transaction', createTransactionHandler(context));
+    // Add this new route
+    app.get('/queue', createQueueViewHandler(context));
 
     return app;
 };
