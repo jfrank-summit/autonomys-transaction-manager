@@ -51,6 +51,6 @@ export const removeAccount = (address: string): void => {
 export const getAvailableAccount = (): Account | undefined => {
     const state = getState();
     return state.accounts.find(
-        account => !state.transactions.some(tx => tx.from === account.address && tx.status === 'PENDING')
+        account => !state.transactionQueue.pending.some(tx => tx.submittedBy.address === account.address)
     );
 };

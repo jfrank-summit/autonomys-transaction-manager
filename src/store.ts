@@ -1,9 +1,14 @@
 import { produce } from 'immer';
-import { State } from './types';
+import { State, TransactionQueue } from './types';
+
+const initialTransactionQueue: TransactionQueue = {
+    pending: [],
+    processing: [],
+};
 
 const initialState: State = {
     accounts: [],
-    transactions: [],
+    transactionQueue: initialTransactionQueue,
     api: null,
 };
 
