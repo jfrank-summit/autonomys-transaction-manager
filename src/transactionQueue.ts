@@ -34,14 +34,6 @@ export const enqueueTransaction = (queue: TransactionQueue, transaction: Transac
     };
 };
 
-export const dequeueTransaction = (queue: TransactionQueue): [Transaction | undefined, TransactionQueue] => {
-    if (queue.queue.length === 0) {
-        return [undefined, queue];
-    }
-    const [nextTransaction, ...remainingQueue] = queue.queue;
-    return [nextTransaction, { queue: remainingQueue }];
-};
-
 export const getQueueLength = (queue: TransactionQueue): number => queue.queue.length;
 
 export const updateTransactionStatus = (

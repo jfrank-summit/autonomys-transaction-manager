@@ -112,7 +112,7 @@ export const processTransactions = async (
     queue: TransactionQueue,
     nonceMap: NonceMap,
     setServerState: SetState
-): Promise<[TransactionQueue, NonceMap]> => {
+): Promise<void> => {
     const { setNonceMap, setTransactionStatus, setTransactionQueue } = setServerState;
 
     const processTransactionWithDeps = (tx: Transaction) =>
@@ -133,11 +133,6 @@ export const processTransactions = async (
         queue
     );
 
-    const updatedNonceMap = processResults.reduce(
-        (acc, [_, __, newNonce], index) => updateNonceMap(acc, transactionsToProcess[index].account.address, newNonce),
-        nonceMap
-    );
-
     const finalQueue = {
         queue: updatedQueue.queue.filter(tx => tx.status === 'pending'),
     };
@@ -146,6 +141,4 @@ export const processTransactions = async (
 
     console.log(`Processed ${transactionsToProcess.length} transactions`);
     console.log(`Remaining queue length: ${getQueueLength(finalQueue)}`);
-
-    return [finalQueue, updatedNonceMap];
 };

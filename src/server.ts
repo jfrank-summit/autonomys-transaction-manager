@@ -19,10 +19,8 @@ export type ServerContext = {
 };
 
 export type SetState = {
-    setApiState?: (newApiState: ApiState) => void;
     setNonceMap: (newNonceMap: NonceMap) => void;
     setTransactionQueue: (newTransactionQueue: TransactionQueue) => void;
-    setAccountPool?: (newAccountPool: AccountPool) => void;
     setTransactionStatus: (id: string, status: Transaction['status']) => void;
 };
 
@@ -75,7 +73,6 @@ const createTransactionHandler = (context: ServerContext) => (req: express.Reque
     return res.status(200).json({ message: 'Transaction added to queue', transactionId: transaction.id });
 };
 
-// Add this new handler
 const createQueueViewHandler = (context: ServerContext) => (req: express.Request, res: express.Response) => {
     const state = context.getState();
     const queueLength = getQueueLength(state.transactionQueue);
@@ -92,7 +89,6 @@ const createQueueViewHandler = (context: ServerContext) => (req: express.Request
     });
 };
 
-// Modify processTransactionsAsync to continue processing while there are transactions
 const processTransactionsAsync = async (context: ServerContext) => {
     const state = context.getState();
     if (!state.apiState.api) {
