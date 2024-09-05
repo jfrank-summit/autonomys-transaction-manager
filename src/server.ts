@@ -85,25 +85,62 @@ const processTransactionsAsync = async (context: ServerContext) => {
         return;
     }
 
-    while (getQueueLength(state.transactionQueue) > 0) {
-        try {
-            const [newQueue, newAccountPool, newNonceMap] = await processTransactions(
-                state.apiState.api,
-                state.transactionQueue,
-                state.accountPool,
-                state.nonceMap
-            );
+    const updateNonceMap = (newNonceMap: Map<string, number>) => {
+        console.log('Updating nonce map in server state');
+        console.log('Old nonce map:', Object.fromEntries(state.nonceMap));
+        console.log('New nonce map:', Object.fromEntries(newNonceMap));
+        context.setState({
+            ...context.getState(),
+            nonceMap: newNonceMap,
+        });
+        console.log('Nonce map updated in server state');
+    };
 
-            context.setState({
-                ...state,
-                transactionQueue: newQueue,
-                accountPool: newAccountPool,
-                nonceMap: newNonceMap,
-            });
-        } catch (error) {
-            console.error('Error processing transactions:', error);
-            break;
+    const setTransactionStatus = (id: string, status: Transaction['status']) => {
+        const currentState = context.getState();
+        const currentQueue = currentState.transactionQueue;
+        const updatedQueue = {
+            queue: currentQueue.queue.map(tx => (tx.id === id ? { ...tx, status } : tx)),
+        };
+        context.setState({
+            ...currentState,
+            transactionQueue: updatedQueue,
+        });
+        console.log(`Transaction ${id} status updated to ${status} in server state`);
+    };
+
+    console.log('Starting transaction processing');
+    console.log('Initial queue length:', getQueueLength(state.transactionQueue));
+    console.log('Initial nonce map:', Object.fromEntries(state.nonceMap));
+
+    try {
+        const [newQueue, newAccountPool, newNonceMap] = await processTransactions(
+            state.apiState.api,
+            state.transactionQueue,
+            state.accountPool,
+            state.nonceMap,
+            updateNonceMap,
+            setTransactionStatus
+        );
+
+        console.log('Transaction processing completed');
+        console.log('Final queue length:', getQueueLength(newQueue));
+        console.log('Final nonce map:', Object.fromEntries(newNonceMap));
+
+        // Update the server state with the new queue, account pool, and nonce map
+        context.setState({
+            ...state,
+            transactionQueue: newQueue,
+            accountPool: newAccountPool,
+            nonceMap: newNonceMap,
+        });
+
+        // If there are still transactions in the queue, process them again
+        if (getQueueLength(newQueue) > 0) {
+            setTimeout(() => processTransactionsAsync(context), 1000); // Wait 1 second before processing again
         }
+    } catch (error) {
+        console.error('Error processing transactions:', error);
     }
 };
 
@@ -135,7 +172,6 @@ export const createServer = async (initialState: Omit<ServerState, 'nonceMap'>) 
     };
 
     app.post('/transaction', createTransactionHandler(context));
-    // Add this new route
     app.get('/queue', createQueueViewHandler(context));
 
     return app;

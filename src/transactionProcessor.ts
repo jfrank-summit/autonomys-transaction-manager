@@ -1,7 +1,7 @@
 import { ApiPromise } from '@polkadot/api';
 import { KeyringPair } from '@polkadot/keyring/types';
 import { SubmittableExtrinsic } from '@polkadot/api/types';
-import { TransactionQueue, Transaction, dequeueTransaction, updateTransactionStatus } from './transactionQueue';
+import { TransactionQueue, Transaction, getQueueLength, updateTransactionStatus } from './transactionQueue';
 import { AccountPool, removeAccount } from './accountPool';
 
 type NonceMap = Map<string, number>;
@@ -27,30 +27,36 @@ const signAndSendExtrinsic = async (
     extrinsic: SubmittableExtrinsic<'promise'>,
     account: KeyringPair,
     nonce: number,
-    transactionId: string
+    transactionId: string,
+    setTransactionStatus: (id: string, status: Transaction['status']) => void
 ): Promise<string> => {
     return new Promise((resolve, reject) => {
         console.log(`Signing and sending transaction ${transactionId} with nonce ${nonce}`);
+        setTransactionStatus(transactionId, 'submitted');
         extrinsic
             .signAndSend(account, { nonce }, ({ status, events }) => {
                 console.log(`Transaction ${transactionId} status: ${status.type}`);
                 if (status.isInBlock) {
                     console.log(`Transaction ${transactionId} included in block ${status.asInBlock}`);
-                } else if (status.isFinalized) {
-                    console.log(`Transaction ${transactionId} finalized in block ${status.asFinalized}`);
+                    let transactionSucceeded = true;
                     events.forEach(({ event }) => {
                         if (api.events.system.ExtrinsicFailed.is(event)) {
                             console.error(`Transaction ${transactionId} failed`);
-                            reject(new Error('Extrinsic failed'));
-                        } else if (api.events.system.ExtrinsicSuccess.is(event)) {
-                            console.log(`Transaction ${transactionId} succeeded`);
-                            resolve(status.asFinalized.toString());
+                            transactionSucceeded = false;
                         }
                     });
+                    if (transactionSucceeded) {
+                        setTransactionStatus(transactionId, 'completed');
+                        resolve(status.asInBlock.toString());
+                    } else {
+                        setTransactionStatus(transactionId, 'failed');
+                        reject(new Error('Transaction failed'));
+                    }
                 }
             })
             .catch(error => {
                 console.error(`Error submitting transaction ${transactionId}: ${error}`);
+                setTransactionStatus(transactionId, 'failed');
                 reject(error);
             });
     });
@@ -58,79 +64,112 @@ const signAndSendExtrinsic = async (
 
 const processTransaction = async (
     api: ApiPromise,
-    transaction: Transaction,
-    nonceMap: NonceMap
-): Promise<[string, NonceMap, Transaction['status']]> => {
-    const { account, call, id } = transaction;
+    transaction: Transaction & { nonce: number },
+    nonceMap: NonceMap,
+    setNonceMap: (newNonceMap: NonceMap) => void,
+    setTransactionStatus: (id: string, status: Transaction['status']) => void
+): Promise<[string, Transaction['status'], number]> => {
+    const { account, call, id, nonce } = transaction;
     const address = account.address;
 
-    let nonce = Math.max(nonceMap.get(address) || 0, await getNonce(api, address));
+    console.log(`[${id}] Starting to process transaction for account ${address}`);
+    console.log(`[${id}] Using nonce ${nonce} for account ${address}`);
+
     const submittableExtrinsic = createExtrinsic(api, call);
 
-    console.log(`Processing transaction ${id} for account ${address}`);
     try {
-        const blockHash = await signAndSendExtrinsic(api, submittableExtrinsic, account, nonce, id);
-        const newNonceMap = updateNonceMap(nonceMap, address, nonce + 1);
-        return [blockHash, newNonceMap, 'completed'];
-    } catch (error: any) {
-        if (error.message.includes('Invalid Transaction: Inability to pay some fees')) {
-            console.error(`Insufficient balance for account ${address} in transaction ${id}: ${error}`);
-            return ['', nonceMap, 'failed'];
-        }
-        console.error(`Transaction ${id} failed for account ${address}: ${error}`);
-        const newNonceMap = updateNonceMap(nonceMap, address, nonce + 1);
-        return ['', newNonceMap, 'failed'];
-    }
-};
+        // console.log(`[${id}] Submitting transaction`);
+        // setTransactionStatus(id, 'submitted');
+        const newNonce = nonce + 1;
+        const newNonceMap = updateNonceMap(nonceMap, address, newNonce);
+        setNonceMap(newNonceMap);
+        console.log(`[${id}] Updated nonce for account ${address} to ${newNonce}`);
+        const blockHash = await signAndSendExtrinsic(
+            api,
+            submittableExtrinsic,
+            account,
+            nonce,
+            id,
+            setTransactionStatus
+        );
 
-const retryTransaction = async (
-    api: ApiPromise,
-    transaction: Transaction,
-    nonceMap: NonceMap,
-    retries: number = 3
-): Promise<[string, NonceMap, Transaction['status']]> => {
-    for (let i = 0; i < retries; i++) {
-        try {
-            const [blockHash, newNonceMap, status] = await processTransaction(api, transaction, nonceMap);
-            return [blockHash, newNonceMap, status];
-        } catch (error) {
-            console.log(`Retry ${i + 1} for transaction ${transaction.id} failed`);
-            if (i === retries - 1) throw error;
-            await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+        console.log(`[${id}] Transaction completed with block hash ${blockHash}`);
+        return [blockHash, 'completed', newNonce];
+    } catch (error: any) {
+        console.error(`[${id}] Transaction failed for account ${address}: ${error}`);
+        if (error.message.includes('1014: Priority is too low')) {
+            // If the error is due to low priority, we should increment the nonce and retry
+            console.log(`[${id}] Retrying with incremented nonce`);
+            return processTransaction(
+                api,
+                { ...transaction, nonce: nonce + 1 },
+                nonceMap,
+                setNonceMap,
+                setTransactionStatus
+            );
         }
+        return ['', 'failed', nonce];
     }
-    throw new Error('Max retries reached');
 };
 
 export const processTransactions = async (
     api: ApiPromise,
     queue: TransactionQueue,
     accountPool: AccountPool,
-    nonceMap: NonceMap
+    nonceMap: NonceMap,
+    setNonceMap: (newNonceMap: NonceMap) => void,
+    setTransactionStatus: (id: string, status: Transaction['status']) => void
 ): Promise<[TransactionQueue, AccountPool, NonceMap]> => {
-    const [transaction, newQueue] = dequeueTransaction(queue);
-    if (!transaction) {
-        console.log('No transactions in queue');
-        return [queue, accountPool, nonceMap];
-    }
+    let currentQueue = queue;
+    let currentAccountPool = accountPool;
+    let currentNonceMap = new Map(nonceMap);
 
-    console.log(`Starting to process transaction ${transaction.id}`);
-    let updatedQueue = updateTransactionStatus(newQueue, transaction.id, 'processing');
+    const transactionsToProcess = currentQueue.queue.filter(tx => tx.status === 'pending');
+    console.log(`Transactions to process: ${JSON.stringify(transactionsToProcess)}`);
 
-    try {
-        const [blockHash, updatedNonceMap, status] = await retryTransaction(api, transaction, nonceMap);
-        console.log(`Transaction ${transaction.id} processed with status: ${status}`);
-        updatedQueue = updateTransactionStatus(updatedQueue, transaction.id, status);
+    for (const transaction of transactionsToProcess) {
+        console.log(`Processing transaction ${transaction.id} with status ${transaction.status}`);
+        console.log(`Current queue length: ${getQueueLength(currentQueue)}`);
 
-        if (status === 'completed') {
-            console.log(`Transaction ${transaction.id} included in block ${blockHash}`);
+        try {
+            const address = transaction.account.address;
+            let nonce = currentNonceMap.get(address) || (await getNonce(api, address));
+            console.log(`[${transaction.id}] Using nonce ${nonce} for account ${address}`);
+
+            const [blockHash, status, newNonce] = await processTransaction(
+                api,
+                { ...transaction, nonce },
+                currentNonceMap,
+                setNonceMap,
+                setTransactionStatus
+            );
+            console.log(`Transaction ${transaction.id} processed with status: ${status}`);
+
+            if (status === 'failed') {
+                console.log(`Transaction ${transaction.id} failed`);
+                currentAccountPool = removeAccount(currentAccountPool, address);
+            }
+
+            currentNonceMap = updateNonceMap(currentNonceMap, address, newNonce);
+
+            // Update the transaction status in the current queue
+            currentQueue = updateTransactionStatus(currentQueue, transaction.id, status);
+        } catch (error: any) {
+            console.error(`Failed to process transaction ${transaction.id}: ${error}`);
+            setTransactionStatus(transaction.id, 'failed');
+            currentAccountPool = removeAccount(currentAccountPool, transaction.account.address);
+            // Update the transaction status in the current queue
+            currentQueue = updateTransactionStatus(currentQueue, transaction.id, 'failed');
         }
-
-        return [updatedQueue, accountPool, updatedNonceMap];
-    } catch (error: any) {
-        console.error(`Failed to process transaction ${transaction.id}: ${error}`);
-        updatedQueue = updateTransactionStatus(updatedQueue, transaction.id, 'failed');
-        const updatedAccountPool = removeAccount(accountPool, transaction.account.address);
-        return [updatedQueue, updatedAccountPool, nonceMap];
     }
+
+    // Remove completed and failed transactions from the queue
+    currentQueue = {
+        queue: currentQueue.queue.filter(tx => tx.status === 'pending'),
+    };
+
+    console.log(`Processed ${transactionsToProcess.length} transactions`);
+    console.log(`Remaining queue length: ${getQueueLength(currentQueue)}`);
+
+    return [currentQueue, currentAccountPool, currentNonceMap];
 };

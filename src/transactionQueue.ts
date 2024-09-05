@@ -11,7 +11,7 @@ export type Transaction = {
     account: KeyringPair;
     call: TransactionCall;
     nonce: number;
-    status: 'pending' | 'processing' | 'completed' | 'failed';
+    status: 'pending' | 'submitted' | 'completed' | 'failed';
 };
 
 export type TransactionQueue = {
