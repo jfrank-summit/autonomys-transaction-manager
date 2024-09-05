@@ -1,11 +1,7 @@
 import { readFileSync } from 'fs';
 import { Keyring } from '@polkadot/keyring';
 import { KeyringPair } from '@polkadot/keyring/types';
-
-export type AccountPool = {
-    accounts: KeyringPair[];
-    currentIndex: number;
-};
+import { AccountPool } from './types';
 
 const loadAccounts = (privateKeysPath: string): KeyringPair[] => {
     const privateKeys = readFileSync(privateKeysPath, 'utf-8')

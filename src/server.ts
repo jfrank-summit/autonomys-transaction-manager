@@ -1,30 +1,20 @@
 import express from 'express';
-import { TransactionQueue, enqueueTransaction, Transaction, TransactionCall, getQueueLength } from './transactionQueue';
-import { AccountPool, getNextAccount } from './accountPool';
+import {
+    TransactionQueue,
+    Transaction,
+    TransactionCall,
+    ServerState,
+    ServerContext,
+    AccountPool,
+    NonceMap,
+} from './types';
+import { enqueueTransaction, getQueueLength } from './transactionQueue';
+import { getNextAccount } from './accountPool';
 import { ApiState } from './networkApi';
 import { processTransactions } from './transactionProcessor';
 import { ApiPromise } from '@polkadot/api';
 
-export type NonceMap = ReadonlyMap<string, number>;
-export type ServerState = {
-    transactionQueue: TransactionQueue;
-    accountPool: AccountPool;
-    apiState: ApiState;
-    nonceMap: NonceMap;
-};
-
-export type ServerContext = {
-    getState: () => ServerState;
-    setState: (newState: ServerState) => void;
-};
-
-export type SetState = {
-    setNonceMap: (newNonceMap: NonceMap) => void;
-    setTransactionQueue: (newTransactionQueue: TransactionQueue) => void;
-    setTransactionStatus: (id: string, status: Transaction['status']) => void;
-};
-
-const createTransactionHandler = (context: ServerContext) => (req: express.Request, res: express.Response) => {
+const createTransactionHandler = (context: ServerContext) => async (req: express.Request, res: express.Response) => {
     const { module, method, params } = req.body;
 
     if (!module || !method || !params) {
@@ -62,15 +52,39 @@ const createTransactionHandler = (context: ServerContext) => (req: express.Reque
 
     context.setState(newState);
 
-    // Immediately trigger transaction processing
-    processTransactionsAsync(context);
+    // Process transactions and wait for the result
+    await processTransactionsAsync(context);
+
+    // Get the updated state after processing
+    const updatedState = context.getState();
+
+    // Find the specific transaction we just added
+    const updatedTransaction = updatedState.transactionQueue.queue.find(tx => tx.id === transaction.id);
 
     console.log(`Selected account: ${account.address}`);
-    console.log(`Current queue length: ${getQueueLength(state.transactionQueue)}`);
-    console.log(`New queue length: ${getQueueLength(newQueue)}`);
+    console.log(`Current queue length: ${getQueueLength(updatedState.transactionQueue)}`);
     console.log(`Added transaction with ID: ${transaction.id}`);
+    console.log(`Updated transaction status: ${updatedTransaction?.status}`);
 
-    return res.status(200).json({ message: 'Transaction added to queue', transactionId: transaction.id });
+    // Remove all processed transactions from the queue
+    const filteredQueue = {
+        queue: updatedState.transactionQueue.queue.filter(tx => tx.status === 'pending'),
+    };
+
+    context.setState({
+        ...updatedState,
+        transactionQueue: filteredQueue,
+    });
+
+    console.log(`Removed processed transactions from queue. New length: ${getQueueLength(filteredQueue)}`);
+
+    return res.status(200).json({
+        message: 'Transaction processed',
+        transactionId: transaction.id,
+        status: updatedTransaction?.status || 'unknown',
+        blockHash: updatedTransaction?.blockHash || '',
+        txHash: updatedTransaction?.txHash || '',
+    });
 };
 
 const createQueueViewHandler = (context: ServerContext) => (req: express.Request, res: express.Response) => {

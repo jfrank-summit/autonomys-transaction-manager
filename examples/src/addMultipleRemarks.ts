@@ -24,16 +24,19 @@ const addMultipleRemarks = async (count: number) => {
     const startTime = Date.now();
     const transactionIds: string[] = [];
 
-    for (let i = 0; i < count; i++) {
-        try {
-            const remark = `Test remark ${i + 1} (Run: ${Date.now()})`; // Modified this line
-            const transactionId = await addRemark(remark);
-            transactionIds.push(transactionId);
-            console.log(`Added transaction ${i + 1}/${count} with ID: ${transactionId} and remark: ${remark}`);
-        } catch (error) {
-            console.error(`Failed to add transaction ${i + 1}/${count}`);
-        }
-    }
+    const remarkPromises = Array.from({ length: count }, (_, i) => {
+        const remark = `Test remark ${i + 1} (Run: ${Date.now()})`;
+        return addRemark(remark)
+            .then(transactionId => {
+                transactionIds.push(transactionId);
+                console.log(`Added transaction ${i + 1}/${count} with ID: ${transactionId} and remark: ${remark}`);
+            })
+            .catch(error => {
+                console.error(`Failed to add transaction ${i + 1}/${count}`);
+            });
+    });
+
+    await Promise.all(remarkPromises);
 
     const endTime = Date.now();
     const duration = (endTime - startTime) / 1000;

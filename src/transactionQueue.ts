@@ -1,22 +1,4 @@
-import { KeyringPair } from '@polkadot/keyring/types';
-
-export type TransactionCall = {
-    module: string;
-    method: string;
-    params: any[];
-};
-
-export type Transaction = {
-    id: string;
-    account: KeyringPair;
-    call: TransactionCall;
-    nonce: number;
-    status: 'pending' | 'submitted' | 'completed' | 'failed';
-};
-
-export type TransactionQueue = {
-    queue: Transaction[];
-};
+import { TransactionQueue, Transaction } from './types';
 
 export const createTransactionQueue = (): TransactionQueue => ({
     queue: [],
@@ -36,10 +18,12 @@ export const enqueueTransaction = (queue: TransactionQueue, transaction: Transac
 
 export const getQueueLength = (queue: TransactionQueue): number => queue.queue.length;
 
-export const updateTransactionStatus = (
+export const updateTransaction = (
     queue: TransactionQueue,
     transactionId: string,
-    newStatus: Transaction['status']
+    newStatus: Transaction['status'],
+    blockHash?: string,
+    txHash?: string
 ): TransactionQueue => ({
-    queue: queue.queue.map(tx => (tx.id === transactionId ? { ...tx, status: newStatus } : tx)),
+    queue: queue.queue.map(tx => (tx.id === transactionId ? { ...tx, status: newStatus, blockHash, txHash } : tx)),
 });

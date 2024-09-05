@@ -1,7 +1,7 @@
 import { getConfig } from './config';
 import { createAccountPool } from './accountPool';
 import { createTransactionQueue } from './transactionQueue';
-import { createServer, ServerState } from './server';
+import { createServer } from './server';
 import { initializeApi, disconnectApi, ApiState } from './networkApi';
 
 const main = async () => {

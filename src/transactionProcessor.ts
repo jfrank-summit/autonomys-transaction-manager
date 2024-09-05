@@ -1,14 +1,8 @@
 import { ApiPromise } from '@polkadot/api';
 import { KeyringPair } from '@polkadot/keyring/types';
 import { SubmittableExtrinsic } from '@polkadot/api/types';
-import { TransactionQueue, Transaction, getQueueLength, updateTransactionStatus } from './transactionQueue';
-import { AccountPool } from './accountPool';
-import { SetState, NonceMap } from './server';
-
-const getNonce = async (api: ApiPromise, address: string): Promise<number> => {
-    const nonce = await api.rpc.system.accountNextIndex(address);
-    return nonce.toNumber();
-};
+import { TransactionQueue, Transaction, NonceMap, SetState, TransactionResult } from './types';
+import { getQueueLength, updateTransaction } from './transactionQueue';
 
 const updateNonceMap = (nonceMap: NonceMap, address: string, nonce: number): NonceMap => {
     return new Map(nonceMap).set(address, Math.max(nonceMap.get(address) || 0, nonce));
@@ -26,15 +20,16 @@ const signAndSendExtrinsic = async (
     nonce: number,
     transactionId: string,
     setTransactionStatus: (id: string, status: Transaction['status']) => void
-): Promise<string> => {
+): Promise<TransactionResult> => {
     return new Promise((resolve, reject) => {
         console.log(`Signing and sending transaction ${transactionId} with nonce ${nonce}`);
         setTransactionStatus(transactionId, 'submitted');
         extrinsic
-            .signAndSend(account, { nonce }, ({ status, events }) => {
+            .signAndSend(account, { nonce }, ({ status, events, txHash }) => {
                 console.log(`Transaction ${transactionId} status: ${status.type}`);
                 if (status.isInBlock) {
-                    console.log(`Transaction ${transactionId} included in block ${status.asInBlock}`);
+                    const blockHash = status.asInBlock.toString();
+                    console.log(`Transaction ${transactionId} included in block ${blockHash}`);
                     let transactionSucceeded = true;
                     events.forEach(({ event }) => {
                         if (api.events.system.ExtrinsicFailed.is(event)) {
@@ -43,8 +38,9 @@ const signAndSendExtrinsic = async (
                         }
                     });
                     if (transactionSucceeded) {
-                        setTransactionStatus(transactionId, 'completed');
-                        resolve(status.asInBlock.toString());
+                        const status = 'completed';
+                        setTransactionStatus(transactionId, status);
+                        resolve({ blockHash, txHash: txHash.toHex(), status });
                     } else {
                         setTransactionStatus(transactionId, 'failed');
                         reject(new Error('Transaction failed'));
@@ -65,7 +61,7 @@ const processTransaction = async (
     nonceMap: NonceMap,
     setNonceMap: (newNonceMap: NonceMap) => void,
     setTransactionStatus: (id: string, status: Transaction['status']) => void
-): Promise<[string, Transaction['status'], number]> => {
+): Promise<TransactionResult> => {
     const { account, call, id, nonce } = transaction;
     const address = account.address;
 
@@ -80,7 +76,7 @@ const processTransaction = async (
         setNonceMap(newNonceMap);
         console.log(`[${id}] Updated nonce for account ${address} to ${newNonce}`);
 
-        const blockHash = await signAndSendExtrinsic(
+        const { blockHash, txHash } = await signAndSendExtrinsic(
             api,
             submittableExtrinsic,
             account,
@@ -90,7 +86,7 @@ const processTransaction = async (
         );
 
         console.log(`[${id}] Transaction completed with block hash ${blockHash}`);
-        return [blockHash, 'completed', newNonce];
+        return { blockHash, txHash, status: 'completed' };
     } catch (error: any) {
         console.error(`[${id}] Transaction failed for account ${address}: ${error}`);
         if (error.message.includes('1014: Priority is too low')) {
@@ -103,7 +99,7 @@ const processTransaction = async (
                 setTransactionStatus
             );
         }
-        return ['', 'failed', nonce];
+        return { blockHash: '', txHash: '', status: 'failed' };
     }
 };
 
@@ -112,7 +108,7 @@ export const processTransactions = async (
     queue: TransactionQueue,
     nonceMap: NonceMap,
     setServerState: SetState
-): Promise<void> => {
+): Promise<TransactionQueue> => {
     const { setNonceMap, setTransactionStatus, setTransactionQueue } = setServerState;
 
     const processTransactionWithDeps = (tx: Transaction) =>
@@ -128,17 +124,15 @@ export const processTransactions = async (
 
     const processResults = await Promise.all(transactionsToProcess.map(processTransactionWithDeps));
 
-    const updatedQueue = processResults.reduce(
-        (acc, [_, status, __], index) => updateTransactionStatus(acc, transactionsToProcess[index].id, status),
-        queue
-    );
+    const updatedQueue = processResults.reduce((acc, { blockHash, status, txHash }, index) => {
+        const tx = transactionsToProcess[index];
+        return updateTransaction(acc, tx.id, status, blockHash, txHash);
+    }, queue);
 
-    const finalQueue = {
-        queue: updatedQueue.queue.filter(tx => tx.status === 'pending'),
-    };
-
-    setTransactionQueue(finalQueue);
+    setTransactionQueue(updatedQueue);
 
     console.log(`Processed ${transactionsToProcess.length} transactions`);
-    console.log(`Remaining queue length: ${getQueueLength(finalQueue)}`);
+    console.log(`Updated queue length: ${getQueueLength(updatedQueue)}`);
+
+    return updatedQueue;
 };
