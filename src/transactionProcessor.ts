@@ -2,9 +2,8 @@ import { ApiPromise } from '@polkadot/api';
 import { KeyringPair } from '@polkadot/keyring/types';
 import { SubmittableExtrinsic } from '@polkadot/api/types';
 import { TransactionQueue, Transaction, getQueueLength, updateTransactionStatus } from './transactionQueue';
-import { AccountPool, removeAccount } from './accountPool';
-
-type NonceMap = Map<string, number>;
+import { AccountPool } from './accountPool';
+import { SetState, NonceMap } from './server';
 
 const getNonce = async (api: ApiPromise, address: string): Promise<number> => {
     const nonce = await api.rpc.system.accountNextIndex(address);
@@ -12,9 +11,7 @@ const getNonce = async (api: ApiPromise, address: string): Promise<number> => {
 };
 
 const updateNonceMap = (nonceMap: NonceMap, address: string, nonce: number): NonceMap => {
-    const newMap = new Map(nonceMap);
-    newMap.set(address, Math.max(newMap.get(address) || 0, nonce));
-    return newMap;
+    return new Map(nonceMap).set(address, Math.max(nonceMap.get(address) || 0, nonce));
 };
 
 const createExtrinsic = (api: ApiPromise, call: Transaction['call']): SubmittableExtrinsic<'promise'> => {
@@ -78,12 +75,11 @@ const processTransaction = async (
     const submittableExtrinsic = createExtrinsic(api, call);
 
     try {
-        // console.log(`[${id}] Submitting transaction`);
-        // setTransactionStatus(id, 'submitted');
         const newNonce = nonce + 1;
         const newNonceMap = updateNonceMap(nonceMap, address, newNonce);
         setNonceMap(newNonceMap);
         console.log(`[${id}] Updated nonce for account ${address} to ${newNonce}`);
+
         const blockHash = await signAndSendExtrinsic(
             api,
             submittableExtrinsic,
@@ -98,7 +94,6 @@ const processTransaction = async (
     } catch (error: any) {
         console.error(`[${id}] Transaction failed for account ${address}: ${error}`);
         if (error.message.includes('1014: Priority is too low')) {
-            // If the error is due to low priority, we should increment the nonce and retry
             console.log(`[${id}] Retrying with incremented nonce`);
             return processTransaction(
                 api,
@@ -115,61 +110,42 @@ const processTransaction = async (
 export const processTransactions = async (
     api: ApiPromise,
     queue: TransactionQueue,
-    accountPool: AccountPool,
     nonceMap: NonceMap,
-    setNonceMap: (newNonceMap: NonceMap) => void,
-    setTransactionStatus: (id: string, status: Transaction['status']) => void
-): Promise<[TransactionQueue, AccountPool, NonceMap]> => {
-    let currentQueue = queue;
-    let currentAccountPool = accountPool;
-    let currentNonceMap = new Map(nonceMap);
+    setServerState: SetState
+): Promise<[TransactionQueue, NonceMap]> => {
+    const { setNonceMap, setTransactionStatus, setTransactionQueue } = setServerState;
 
-    const transactionsToProcess = currentQueue.queue.filter(tx => tx.status === 'pending');
-    console.log(`Transactions to process: ${JSON.stringify(transactionsToProcess)}`);
+    const processTransactionWithDeps = (tx: Transaction) =>
+        processTransaction(
+            api,
+            { ...tx, nonce: nonceMap.get(tx.account.address) || 0 },
+            nonceMap,
+            setNonceMap,
+            setTransactionStatus
+        );
 
-    for (const transaction of transactionsToProcess) {
-        console.log(`Processing transaction ${transaction.id} with status ${transaction.status}`);
-        console.log(`Current queue length: ${getQueueLength(currentQueue)}`);
+    const transactionsToProcess = queue.queue.filter(tx => tx.status === 'pending');
 
-        try {
-            const address = transaction.account.address;
-            let nonce = currentNonceMap.get(address) || (await getNonce(api, address));
-            console.log(`[${transaction.id}] Using nonce ${nonce} for account ${address}`);
+    const processResults = await Promise.all(transactionsToProcess.map(processTransactionWithDeps));
 
-            const [blockHash, status, newNonce] = await processTransaction(
-                api,
-                { ...transaction, nonce },
-                currentNonceMap,
-                setNonceMap,
-                setTransactionStatus
-            );
-            console.log(`Transaction ${transaction.id} processed with status: ${status}`);
+    const updatedQueue = processResults.reduce(
+        (acc, [_, status, __], index) => updateTransactionStatus(acc, transactionsToProcess[index].id, status),
+        queue
+    );
 
-            if (status === 'failed') {
-                console.log(`Transaction ${transaction.id} failed`);
-                currentAccountPool = removeAccount(currentAccountPool, address);
-            }
+    const updatedNonceMap = processResults.reduce(
+        (acc, [_, __, newNonce], index) => updateNonceMap(acc, transactionsToProcess[index].account.address, newNonce),
+        nonceMap
+    );
 
-            currentNonceMap = updateNonceMap(currentNonceMap, address, newNonce);
-
-            // Update the transaction status in the current queue
-            currentQueue = updateTransactionStatus(currentQueue, transaction.id, status);
-        } catch (error: any) {
-            console.error(`Failed to process transaction ${transaction.id}: ${error}`);
-            setTransactionStatus(transaction.id, 'failed');
-            currentAccountPool = removeAccount(currentAccountPool, transaction.account.address);
-            // Update the transaction status in the current queue
-            currentQueue = updateTransactionStatus(currentQueue, transaction.id, 'failed');
-        }
-    }
-
-    // Remove completed and failed transactions from the queue
-    currentQueue = {
-        queue: currentQueue.queue.filter(tx => tx.status === 'pending'),
+    const finalQueue = {
+        queue: updatedQueue.queue.filter(tx => tx.status === 'pending'),
     };
 
-    console.log(`Processed ${transactionsToProcess.length} transactions`);
-    console.log(`Remaining queue length: ${getQueueLength(currentQueue)}`);
+    setTransactionQueue(finalQueue);
 
-    return [currentQueue, currentAccountPool, currentNonceMap];
+    console.log(`Processed ${transactionsToProcess.length} transactions`);
+    console.log(`Remaining queue length: ${getQueueLength(finalQueue)}`);
+
+    return [finalQueue, updatedNonceMap];
 };
